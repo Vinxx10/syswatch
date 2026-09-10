@@ -95,16 +95,9 @@ def prime_cpu():
     time.sleep(1)
 
 
-if __name__ == "__main__":
-    # First call to cpu_percent always returns 0.0, so prime it
-    prime_cpu()
-    snapshot = collect_snapshot()
-    print_snapshot(snapshot)
-
-
 def collect_baseline(num_snapshots=3, interval=2):
     """Collect multiple snapshots to build a baseline dataset."""
-    ensure_data_dir()
+    ensure_datadir()
     print(f"Collecting {num_snapshots} snapshots ({interval}s apart)...")
     print("This teaches the model what 'normal' looks like on your machine.\n")
 
@@ -122,3 +115,75 @@ def collect_baseline(num_snapshots=3, interval=2):
     baseline.to_csv(BASELINE_PATH, index=False)
     print(f"\nBaseline saved: {len(baseline)} process samples")
     print(f"Location: {BASELINE_PATH}")
+
+
+def train_model(contamination=0.05):
+    """Train an Isolation Forest on the baseline data."""
+    if not os.path.exists(BASELINE_PATH):
+        print("No baseline data found. Run: python3 syswatch.py baseline")
+        sys.exit(1)
+
+    baseline = pd.read_csv(BASELINE_PATH)
+    X = baseline[FEATURES_COLS].fillna(0)
+
+    model = IsolationForest(
+        n_estimators=100,
+        contamination=contamination,
+        random_state=42,
+    )
+    model.fit(X)
+
+    ensure_datadir()
+    joblib.dump(model, MODEL_PATH)
+    print(f"Model trained on {len(X)} samples (contamination={contamination})")
+    print(f"Saved to {MODEL_PATH}")
+
+
+def scan():
+    """Scan current processes and flag anomalies."""
+    if not os.path.exists(MODEL_PATH):
+        print("No trained model found. Run:")
+        print("  python3 syswatch.py baseline")
+        print("  python3 syswatch.py train")
+        sys.exit(1)
+
+    model = joblib.load(MODEL_PATH)
+
+    prime_cpu()
+
+    snapshot = collect_snapshot()
+    X = snapshot[FEATURES_COLS].fillna(0)
+
+    predictions = model.predict(X)
+    scores = model.score_samples(X)
+
+    snapshot["anomaly"] = predictions
+    snapshot["score"] = scores.round(4)
+
+    anomalies = snapshot[snapshot["anomaly"] == -1].sort_values("score")
+    normal_count = len(snapshot[snapshot["anomaly"] == 1])
+    print(f"\nScanned {len(snapshot)} processes")
+    print(f"Normal: {normal_count}  |  Anomalies: {len(anomalies)}\n")
+
+    if len(anomalies) > 0:
+        print("ANOMALIES DETECTED:")
+        print("-" * 72)
+        print(
+            f"{'PID':<8} {'Name':<20} {'CPU%':<8} {'Mem MB':<10} "
+            f"{'Threads':<9} {'Score'}"
+        )
+        print("-" * 72)
+        for _, row in anomalies.iterrows():
+            print(
+                f"{row['pid']:<8} {str(row['name'])[:19]:<20} "
+                f"{row['cpu_percent']:<8.1f} {row['memory_mb']:<10.1f} "
+                f"{row['num_threads']:<9} {row['score']:.4f}"
+            )
+    else:
+        print("No anomalies detected. Everything looks normal.")
+
+
+if __name__ == "__main__":
+    collect_baseline()
+    train_model()
+    scan()
