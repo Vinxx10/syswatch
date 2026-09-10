@@ -10,6 +10,7 @@ import joblib
 import pandas as pd
 import psutil
 from sklearn.ensemble import IsolationForest
+from ollama import chat as ollama_chat
 
 DATA_DIR = os.path.expanduser("~/.syswatch")
 MODEL_PATH = os.path.join(DATA_DIR, "model.joblib")
@@ -181,6 +182,87 @@ def scan():
             )
     else:
         print("No anomalies detected. Everything looks normal.")
+
+
+def analyze():
+    """Run AI-powered system analysis using a local model."""
+    print("Collecting system data...\n")
+    system_info = collect_system_info()
+
+    prompt = f"""You are a linux system security and performance expert.
+Analyze the following system data and provide a report covering:
+
+1. SECURITY THREATS: Suspicious processes, unusual network
+   connections, open ports that should not be exposed, and
+   any signs of malware or unauthorized access.
+2. WHY THE COMPUTER IS SLOW: Which processes are consuming
+   the most CPU and memory, and whether that usage is normal.
+3. DISK SPACE: What is consuming storage and what can be
+   safely cleaned up.
+4. RECOMMENDATIONS: Specific commands the user can run to
+   fix each issue, improve performance, and harden security.
+
+Be specific. Name exact processes, ports, and paths.
+Give exact terminal commands for every recommendation.
+
+SYSTEM DATA:
+{system_info}
+"""
+
+    print("Analyzing with local AI (this may take a moment)...\n")
+    print("=" * 60)
+    print("AI SYSTEM ANALYSIS REPORT")
+    print("=" * 60)
+
+    # Stream the AI response for real-time output
+    stream = ollama_chat(
+        model="llama3.2:latest",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+    )
+    for chunk in stream:
+        print(chunk["message"]["content"], end="", flush=True)
+
+    print("\n" + "=" * 60)
+
+
+def collect_system_info():
+    """Collect comprehensive system information for AI analysis."""
+    info = []
+
+    # Disk usage per partition
+    info.append("=== DISK USAGE ===")
+    for part in psutil.disk_partitions(all=False):
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            info.append(
+                f"  {part.mountpoint}: "
+                f"{usage.used / (1024**3):.1f}GB / "
+                f"{usage.total / (1024**3):.1f}GB "
+                f"({usage.percent}% full)"
+            )
+        except PermissionError:
+            continue
+            # Memory breakdown
+    mem = psutil.virtual_memory()
+    info.append("\n=== MEMORY ===")
+    info.append(
+        f"  Total: {mem.total / (1024**3):.1f}GB  "
+        f"Used: {mem.used / (1024**3):.1f}GB  "
+        f"Available: {mem.available / (1024**3):.1f}GB  "
+        f"({mem.percent}% used)"
+    )
+
+    # Top 10 CPU consumers
+    prime_cpu()
+    snapshot = collect_snapshot()
+    top_cpu = snapshot.nlargest(10, "cpu_percent")
+    info.append("\n=== TOP 10 CPU CONSUMERS ===")
+    for _, row in top_cpu.iterrows():
+        info.append(
+            f"  PID {row['pid']} {str(row['name'])[:20]} "
+            f"CPU={row['cpu_percent']:.1f}%"
+        )
 
 
 if __name__ == "__main__":
